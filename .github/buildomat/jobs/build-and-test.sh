@@ -20,6 +20,9 @@ cargo fmt --check
 banner build
 ptime -m cargo build --all-targets
 
+banner clippy
+ptime -m cargo clippy --all-targets -- -D warnings
+
 banner test
 cargo install cargo-nextest --locked
 pfexec ptime -m cargo nextest run
