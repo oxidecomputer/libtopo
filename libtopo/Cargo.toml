@@ -9,4 +9,5 @@ repository = "https://github.com/oxidecomputer/libtopo"
 [dependencies]
 libtopo-sys = { version = "0.1.0", path = "../libtopo-sys" }
 illumos-nvpair = "0.4"
+illumos-nvpair-sys = "0.2"
 thiserror = "2"
