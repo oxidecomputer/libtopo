@@ -1626,4 +1626,121 @@ mod tests {
             "expected Debug to mention the type code, got {s:?}"
         );
     }
+
+    // ── Unsafe-coverage tests ──
+    //
+    // These tests exist primarily to drag previously-unexercised unsafe
+    // FFI blocks onto a libumem-monitored path. Run them under
+    // LD_PRELOAD=libumem.so.1 with UMEM_DEBUG=default,audit=16,contents
+    // to surface latent UAF / double-free / buffer-overrun. Functional
+    // assertions are intentionally minimal — the strong signal is that
+    // the test process did not SIGSEGV.
+
+    #[test]
+    fn open_with_root_explicit_root() {
+        // Covers the Some(path) arm of TopoHdl::open_with_root, which the
+        // rest of the suite doesn't reach (everything else uses TopoHdl::open,
+        // which passes None).
+        let hdl = TopoHdl::open_with_root(Some("/"))
+            .expect("open_with_root(Some(\"/\")) should succeed on a rooted host");
+        drop(hdl);
+    }
+
+    #[test]
+    fn node_asru_callable_on_hc() {
+        // Covers topo_node_asru. Many nodes legitimately lack an ASRU, so
+        // we accept either Ok or Err — we only need the FFI path to run.
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let mut visited = false;
+        match snap.walk(Scheme::Hc, |node| {
+            let _ = node.asru();
+            visited = true;
+            Ok(WalkAction::Stop)
+        }) {
+            Ok(()) => assert!(visited, "expected to visit at least one node"),
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn node_fru_callable_on_hc() {
+        // Covers topo_node_fru. Same shape as the asru test above.
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let mut visited = false;
+        match snap.walk(Scheme::Hc, |node| {
+            let _ = node.fru();
+            visited = true;
+            Ok(WalkAction::Stop)
+        }) {
+            Ok(()) => assert!(visited, "expected to visit at least one node"),
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn fmri_expand_roundtrips() {
+        // Covers TopoHdl::fmri_expand.
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let Some(mut fmri) = first_hc_resource(&snap).expect("walk") else {
+            eprintln!("skipping: empty hc topology");
+            return;
+        };
+        hdl.fmri_expand(&mut fmri)
+            .expect("fmri_expand should succeed on a tree-derived FMRI");
+        // The expanded FMRI should still be string-representable.
+        let _s = hdl
+            .fmri_to_string(&fmri)
+            .expect("fmri_to_string after expand");
+    }
+
+    #[test]
+    fn fmri_inspect_yields_nvlist() {
+        // Covers Fmri::inspect (the nvlist read path).
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let Some(fmri) = first_hc_resource(&snap).expect("walk") else {
+            eprintln!("skipping: empty hc topology");
+            return;
+        };
+        let _nvl = fmri.inspect().expect("Fmri::inspect should succeed");
+    }
+
+    #[test]
+    fn walk_each_non_hc_scheme() {
+        // Drag each non-hc scheme's enumerator module through
+        // topo_walk_init / topo_walk_step under libumem. A UAF analogous
+        // to illumos issue 18110 (pciebus.so) in any of these modules
+        // would surface as a SIGSEGV here.
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let schemes = [
+            Scheme::Mem,
+            Scheme::Cpu,
+            Scheme::Dev,
+            Scheme::Mod,
+            Scheme::Svc,
+            Scheme::Sw,
+            Scheme::Zfs,
+            Scheme::Pcie,
+            Scheme::Path,
+            Scheme::Fmd,
+            Scheme::Pkg,
+            Scheme::Legacy,
+        ];
+        for scheme in schemes {
+            match snap.walk(scheme, |_node| Ok(WalkAction::Continue)) {
+                Ok(()) => {}
+                Err(e) => eprintln!("walk {scheme:?}: {e}"),
+            }
+        }
+    }
 }
