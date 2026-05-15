@@ -25,4 +25,12 @@ ptime -m cargo clippy --all-targets -- -D warnings
 
 banner test
 cargo install cargo-nextest --locked
-pfexec ptime -m cargo nextest run
+# Run tests under libumem audit mode so use-after-free, double-free, and
+# buffer-overrun bugs in libtopo (or our FFI usage of it) surface as
+# deterministic SIGSEGVs instead of being silently tolerated by the
+# default umem allocator.
+pfexec ptime -m env \
+	LD_PRELOAD=libumem.so.1 \
+	UMEM_DEBUG=default,audit=16,contents \
+	UMEM_LOGGING=transaction \
+	cargo nextest run
