@@ -4,6 +4,7 @@
 //! then [`Snapshot::walk`] to visit the topology.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::ffi::{CStr, CString, NulError};
 use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
@@ -129,6 +130,18 @@ pub enum Error {
     /// An error reading values from an nvlist (e.g. via [`Fmri::inspect`]).
     #[error(transparent)]
     NvPair(#[from] NvError),
+
+    /// [`TopoHdl::snapshot`] was called a second time on the same handle.
+    /// See the doc comment on `snapshot` for the upstream libtopo bug
+    /// this guards against (illumos issue 18110).
+    #[error(
+        "a snapshot has already been taken on this TopoHdl; \
+         re-snapshotting the same handle dereferences freed memory \
+         in libtopo (illumos issue 18110: \
+         https://www.illumos.org/issues/18110). \
+         Open a fresh TopoHdl for each snapshot."
+    )]
+    SnapshotAlreadyTaken,
 }
 
 /// An FMA FMRI scheme — one of the `FM_FMRI_SCHEME_*` constants from
@@ -186,6 +199,11 @@ impl Scheme {
 /// `!Sync` (falls out naturally from the raw pointer).
 pub struct TopoHdl {
     hdl: *mut topo_hdl_t,
+    /// Tracks whether [`Self::snapshot`] has already been called on this
+    /// handle. A second call returns [`Error::SnapshotAlreadyTaken`] —
+    /// see the doc comment on `snapshot` for the upstream libtopo bug
+    /// this guards against.
+    snapshot_taken: Cell<bool>,
 }
 
 impl TopoHdl {
@@ -210,7 +228,10 @@ impl TopoHdl {
         if hdl.is_null() {
             return Err(Error::Open(topo_errmsg(err)));
         }
-        Ok(Self { hdl })
+        Ok(Self {
+            hdl,
+            snapshot_taken: Cell::new(false),
+        })
     }
 
     /// Hold a libtopo topology snapshot.
@@ -218,7 +239,29 @@ impl TopoHdl {
     /// The snapshot is built in memory by libtopo enumerator plugins and
     /// lives until the returned [`Snapshot`] is dropped. Only one
     /// snapshot is held per handle at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SnapshotAlreadyTaken`] if called more than once
+    /// on the same `TopoHdl`. The supported pattern is to open a fresh
+    /// `TopoHdl` for each snapshot you need, mirroring how
+    /// `fmd_topo.c::fmd_topo_update()` uses libtopo upstream.
+    ///
+    /// Calling `snapshot` a second time after the previous `Snapshot`
+    /// has been dropped triggers a use-after-free inside libtopo's
+    /// `pciebus.so` enumerator: `topo_snap_release` tears down the
+    /// snapshot's tnodes via `topo_snap_destroy`'s bottom-up walk, but
+    /// `pciebus.so`'s per-handle state (kept alive by `topo_modhash`
+    /// until `topo_close`) retains pointers into the freed tnodes. The
+    /// next `topo_snap_hold` re-enters PCIe enumeration and dereferences
+    /// them in `pgroup_get`. The default umem allocator hands the freed
+    /// bytes back intact so the bug is normally silent; under libumem
+    /// audit mode it's a deterministic SIGSEGV. See illumos issue
+    /// <https://www.illumos.org/issues/18110>.
     pub fn snapshot(&self) -> Result<Snapshot<'_>, Error> {
+        if self.snapshot_taken.replace(true) {
+            return Err(Error::SnapshotAlreadyTaken);
+        }
         Snapshot::new(self)
     }
 
@@ -1261,7 +1304,14 @@ mod tests {
         assert_eq!(uuid.len(), 36, "expected a 36-char UUID, got: {uuid:?}");
     }
 
+    // When illumos issue 18110 is fixed upstream, remove the
+    // `#[ignore]` from this test and delete `resnapshot_same_handle_panics`
+    // below. The wrapper's panic guard in `TopoHdl::snapshot` should
+    // also be removed at that point so this path actually works.
+    //
+    // Tracking: https://www.illumos.org/issues/18110
     #[test]
+    #[ignore = "panics due to libtopo bug; re-enable when illumos issue 18110 is fixed"]
     fn resnapshot_same_handle() {
         let hdl = TopoHdl::open().expect("failed to open");
         let first = hdl.snapshot().expect("first snapshot");
@@ -1277,6 +1327,24 @@ mod tests {
         // the same UUID for unchanged hardware. We just verify the second
         // succeeds against the same handle after the first was dropped.
         let _ = first_uuid;
+    }
+
+    // Companion to `resnapshot_same_handle`: pins down the wrapper's
+    // current behavior of returning `Error::SnapshotAlreadyTaken` on
+    // a second `snapshot()` call, until illumos issue 18110 is fixed
+    // and the guard is removed.
+    //
+    // Tracking: https://www.illumos.org/issues/18110
+    #[test]
+    fn resnapshot_same_handle_returns_error() {
+        let hdl = TopoHdl::open().expect("failed to open");
+        let first = hdl.snapshot().expect("first snapshot");
+        drop(first);
+        let second = hdl.snapshot();
+        assert!(
+            matches!(second, Err(Error::SnapshotAlreadyTaken)),
+            "expected Err(SnapshotAlreadyTaken) on second snapshot"
+        );
     }
 
     /// Whether `err` reports an empty topology (e.g. a CI VM with no real
