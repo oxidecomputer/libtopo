@@ -23,7 +23,19 @@ snap.walk(Scheme::Hc, |node| {
 })?;
 ```
 
-See [`examples/`](examples/) for runnable programs.
+Inside the walker callback a `Node` also exposes `label()`, `parent()`,
+`property(group, name)`, and `property_groups()`.
+
+See [`examples/`](examples/) for runnable programs:
+
+- `list_topology` — dump a scheme's nodes, FMRIs, labels, and (with `-v`)
+  every property.
+- `fmri_resolve` — parse an FMRI string and report present/replaced/unusable.
+- `nvme_locations` — for every `nvme` node, print its devinfo instance,
+  label, parent node, and the parent's label and `binding/slot`.
+- `disk_locations` — join devinfo's `blkdev` → `nvme` → `pcieb` chain with
+  the topology above, so each disk's `physical-slot#` sits next to its
+  libtopo location label.
 
 ## Privileges
 
