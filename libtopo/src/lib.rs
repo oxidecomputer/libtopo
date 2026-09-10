@@ -34,8 +34,8 @@ use libtopo_sys::{
     TOPO_WALK_NEXT, TOPO_WALK_TERMINATE, tnode_t, topo_close, topo_fmri_expand, topo_fmri_nvl2str,
     topo_fmri_present, topo_fmri_replaced, topo_fmri_str2nvl, topo_fmri_unusable, topo_hdl_strfree,
     topo_hdl_t, topo_instance_t, topo_node_asru, topo_node_fru, topo_node_instance,
-    topo_node_label, topo_node_name, topo_node_resource, topo_open, topo_prop_getprop,
-    topo_prop_getprops, topo_snap_hold, topo_snap_release, topo_strerror,
+    topo_node_label, topo_node_name, topo_node_parent, topo_node_resource, topo_open,
+    topo_prop_getprop, topo_prop_getprops, topo_snap_hold, topo_snap_release, topo_strerror,
     topo_type_t_TOPO_TYPE_BOOLEAN, topo_type_t_TOPO_TYPE_DOUBLE, topo_type_t_TOPO_TYPE_FMRI,
     topo_type_t_TOPO_TYPE_FMRI_ARRAY, topo_type_t_TOPO_TYPE_INT32,
     topo_type_t_TOPO_TYPE_INT32_ARRAY, topo_type_t_TOPO_TYPE_INT64,
@@ -583,6 +583,34 @@ impl<'cb> Node<'cb> {
         // SAFETY: self.tnode is valid for 'cb; topo_node_instance reads an
         // integer field from the tnode struct and cannot fail.
         unsafe { topo_node_instance(self.tnode) }
+    }
+
+    /// The node's parent, or `None` for the root of the scheme tree.
+    ///
+    /// [`Snapshot::walk`] starts below the scheme root, so every node the
+    /// walker hands out has a parent. For top-level nodes (e.g. `chassis`
+    /// in `hc`) that parent is the scheme root: a node named after the
+    /// scheme (`"hc"`) that the walker itself never visits and whose own
+    /// `parent()` is `None`.
+    ///
+    /// The parent shares this node's `'cb` lifetime: both live in the same
+    /// snapshot, and libtopo's node utilities are only documented as
+    /// callable from inside a walker callback, so the parent cannot be
+    /// stored past the closure return either.
+    pub fn parent(&self) -> Option<Node<'cb>> {
+        // SAFETY: self.tnode is valid for 'cb; topo_node_parent reads the
+        // tn_parent pointer from the tnode struct and cannot fail. A
+        // non-null parent is a tnode in the same snapshot, alive for at
+        // least as long as its child.
+        let p = unsafe { topo_node_parent(self.tnode) };
+        if p.is_null() {
+            return None;
+        }
+        Some(Node {
+            hdl: self.hdl,
+            tnode: p,
+            _marker: PhantomData,
+        })
     }
 
     /// The node's resource FMRI (its identity) via `topo_node_resource`.
@@ -1521,6 +1549,55 @@ mod tests {
             return;
         };
         let _ = hdl.fmri_unusable(&fmri).expect("fmri_unusable failed");
+    }
+
+    #[test]
+    fn node_parent_matches_preorder_walk() {
+        // TOPO_WALK_CHILD is a pre-order depth-first traversal, so every
+        // node's parent must have been visited before the node itself,
+        // except that the walk starts below the scheme root: top-level
+        // nodes have a never-visited parent named after the scheme, and
+        // that root is the only node allowed to have no parent.
+        //
+        // Violations are collected and asserted after the walk; a panic
+        // inside the extern "C" trampoline would abort the process.
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        // Identify visited nodes by tnode pointer: (name, instance) pairs
+        // repeat across subtrees (e.g. nvme=0 under every bay).
+        let mut seen: Vec<*mut tnode_t> = Vec::new();
+        let mut violations: Vec<String> = Vec::new();
+        let mut saw_scheme_root = false;
+        let result = snap.walk(Scheme::Hc, |node| {
+            let me = format!("{}[{}]", node.name(), node.instance());
+            match node.parent() {
+                None => violations.push(format!("{me}: visited node has no parent")),
+                Some(parent) if seen.contains(&parent.tnode) => {}
+                Some(parent) if parent.name() == "hc" && parent.parent().is_none() => {
+                    saw_scheme_root = true;
+                }
+                Some(parent) => violations.push(format!(
+                    "{me}: parent {}[{}] was not visited before its child",
+                    parent.name(),
+                    parent.instance(),
+                )),
+            }
+            seen.push(node.tnode);
+            Ok(WalkAction::Continue)
+        });
+        match result {
+            Ok(()) => {
+                assert!(violations.is_empty(), "{}", violations.join("\n"));
+                assert!(
+                    saw_scheme_root || seen.is_empty(),
+                    "no top-level node reported the hc scheme root as its parent"
+                );
+            }
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
     }
 
     #[test]
