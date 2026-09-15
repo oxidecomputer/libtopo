@@ -1,7 +1,9 @@
 //! Idiomatic Rust bindings for illumos `libtopo`.
 //!
 //! See [`TopoHdl`] for the entry point. Open a handle, take a [`Snapshot`],
-//! then [`Snapshot::walk`] to visit the topology.
+//! then [`Snapshot::walk`] to visit the topology. The [`hc`] module holds
+//! the node, property-group, and property names from `<fm/topo_hc.h>` as
+//! `&str` constants.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -10,6 +12,8 @@ use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
 
 pub use illumos_nvpair::{NvError, NvList, NvValue, OwnedNvList};
+
+pub mod hc;
 
 use illumos_nvpair_sys::{
     boolean_t, data_type_t, data_type_t_DATA_TYPE_BOOLEAN_VALUE, data_type_t_DATA_TYPE_DOUBLE,
@@ -1271,6 +1275,24 @@ mod tests {
     }
 
     #[test]
+    fn hc_constants_are_header_strings() {
+        assert_eq!(hc::NVME, "nvme");
+        assert_eq!(hc::BAY, "bay");
+        assert_eq!(hc::SLOT, "slot");
+        assert_eq!(hc::TOPO_PGROUP_IO, "io");
+        assert_eq!(hc::TOPO_IO_INSTANCE, "instance");
+        assert_eq!(hc::TOPO_PGROUP_BINDING, "binding");
+        assert_eq!(hc::TOPO_BINDING_SLOT, "slot");
+        assert_eq!(
+            CStr::from_bytes_with_nul(libtopo_sys::NVME)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            hc::NVME
+        );
+    }
+
+    #[test]
     fn topo_errmsg_returns_nonempty_string() {
         for err in [0, 100, -1, 9999] {
             let s = topo_errmsg(err);
@@ -1413,6 +1435,30 @@ mod tests {
             }
             Err(e) if is_empty_topology(&e) => {
                 eprintln!("skipping: empty hc topology (no hardware?)");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn walk_root_node_name_is_hc_constant() {
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let mut checked = false;
+        match snap.walk(Scheme::Hc, |node| {
+            // The hc tree is rooted at a chassis (or motherboard on a
+            // bare board), both of which topo_hc.h names.
+            let name = node.name();
+            assert!(
+                name == hc::CHASSIS || name == hc::MOTHERBOARD,
+                "unexpected hc root node name {name:?}"
+            );
+            checked = true;
+            Ok(WalkAction::Stop)
+        }) {
+            Ok(()) => assert!(checked, "expected to inspect at least one node"),
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
             }
             Err(e) => panic!("walk failed: {e}"),
         }

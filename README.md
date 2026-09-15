@@ -29,6 +29,10 @@ snap.walk(Scheme::Hc, |node| {
 })?;
 ```
 
+Node, property-group, and property names from `<fm/topo_hc.h>` are
+available as `&str` constants in `libtopo::hc` (for example `hc::NVME`,
+`hc::TOPO_PGROUP_IO`, `hc::TOPO_IO_INSTANCE`).
+
 See [`libtopo/examples/`](libtopo/examples/) for runnable programs.
 
 ## Privileges

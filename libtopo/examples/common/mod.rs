@@ -2,10 +2,8 @@
 //! walking the `hc` topology and collecting, for every `nvme` node, the
 //! facts needed to place the controller in the chassis.
 
-use std::ffi::CStr;
-
+use libtopo::hc::{NVME, TOPO_BINDING_SLOT, TOPO_IO_INSTANCE, TOPO_PGROUP_BINDING, TOPO_PGROUP_IO};
 use libtopo::{Error, Node, PropValue, Scheme, Snapshot, WalkAction};
-use libtopo_sys::{NVME, TOPO_BINDING_SLOT, TOPO_IO_INSTANCE, TOPO_PGROUP_BINDING, TOPO_PGROUP_IO};
 
 /// Where libtopo places one `nvme` node.
 #[derive(Debug)]
@@ -47,10 +45,9 @@ impl NvmeLocation {
 /// Walk the `hc` scheme and collect every `nvme` node, sorted by
 /// `io/instance` (nodes without one sort last).
 pub fn collect_nvme_locations(snap: &Snapshot<'_>) -> Result<Vec<NvmeLocation>, Error> {
-    let nvme = cstr_name(NVME);
     let mut out = Vec::new();
     snap.walk(Scheme::Hc, |node| {
-        if node.name() != nvme {
+        if node.name() != NVME {
             return Ok(WalkAction::Continue);
         }
         out.push(NvmeLocation {
@@ -76,8 +73,7 @@ fn label_of(node: &Node<'_>) -> Option<String> {
 }
 
 /// Read a `uint32` property, or `None` if it is missing or not a uint32.
-fn u32_prop(node: &Node<'_>, group: &'static [u8], name: &'static [u8]) -> Option<u32> {
-    let (group, name) = (cstr_name(group), cstr_name(name));
+fn u32_prop(node: &Node<'_>, group: &str, name: &str) -> Option<u32> {
     match node.property(group, name) {
         Ok(PropValue::UInt32(v)) => Some(v),
         Ok(other) => {
@@ -90,14 +86,6 @@ fn u32_prop(node: &Node<'_>, group: &'static [u8], name: &'static [u8]) -> Optio
         }
         Err(_) => None,
     }
-}
-
-/// View a NUL-terminated string constant from `libtopo-sys` as `&str`.
-fn cstr_name(bytes: &'static [u8]) -> &'static str {
-    CStr::from_bytes_with_nul(bytes)
-        .expect("libtopo-sys string constants are NUL-terminated")
-        .to_str()
-        .expect("libtopo-sys string constants are ASCII")
 }
 
 /// Render an optional value for a table cell.
