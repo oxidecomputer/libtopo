@@ -35,10 +35,12 @@ use libtopo_sys::{
     topo_fmri_present, topo_fmri_replaced, topo_fmri_str2nvl, topo_fmri_unusable, topo_hdl_strfree,
     topo_hdl_t, topo_instance_t, topo_node_asru, topo_node_fru, topo_node_instance,
     topo_node_label, topo_node_name, topo_node_parent, topo_node_resource, topo_open,
-    topo_prop_getprop, topo_prop_getprops, topo_snap_hold, topo_snap_release, topo_strerror,
-    topo_type_t_TOPO_TYPE_BOOLEAN, topo_type_t_TOPO_TYPE_DOUBLE, topo_type_t_TOPO_TYPE_FMRI,
-    topo_type_t_TOPO_TYPE_FMRI_ARRAY, topo_type_t_TOPO_TYPE_INT32,
-    topo_type_t_TOPO_TYPE_INT32_ARRAY, topo_type_t_TOPO_TYPE_INT64,
+    topo_prop_errno_ETOPO_PROP_NOENT, topo_prop_errno_ETOPO_PROP_TYPE, topo_prop_get_double,
+    topo_prop_get_fmri, topo_prop_get_int32, topo_prop_get_int64, topo_prop_get_string,
+    topo_prop_get_uint32, topo_prop_get_uint64, topo_prop_getprop, topo_prop_getprops,
+    topo_snap_hold, topo_snap_release, topo_strerror, topo_type_t_TOPO_TYPE_BOOLEAN,
+    topo_type_t_TOPO_TYPE_DOUBLE, topo_type_t_TOPO_TYPE_FMRI, topo_type_t_TOPO_TYPE_FMRI_ARRAY,
+    topo_type_t_TOPO_TYPE_INT32, topo_type_t_TOPO_TYPE_INT32_ARRAY, topo_type_t_TOPO_TYPE_INT64,
     topo_type_t_TOPO_TYPE_INT64_ARRAY, topo_type_t_TOPO_TYPE_SIZE, topo_type_t_TOPO_TYPE_STRING,
     topo_type_t_TOPO_TYPE_STRING_ARRAY, topo_type_t_TOPO_TYPE_TIME, topo_type_t_TOPO_TYPE_UINT32,
     topo_type_t_TOPO_TYPE_UINT32_ARRAY, topo_type_t_TOPO_TYPE_UINT64,
@@ -61,6 +63,31 @@ pub(crate) fn topo_errmsg(err: c_int) -> String {
     }
 }
 
+/// Translate the error code from a failed property lookup into an
+/// [`Error`], giving the two codes callers branch on their own variants.
+///
+/// `expected` is libtopo's name for the type a typed getter asked for;
+/// `None` for lookups that impose no type, in which case a type error
+/// (which libtopo can still raise from a property method) stays an
+/// [`Error::Topo`].
+fn prop_error(err: c_int, group: &str, name: &str, expected: Option<&'static str>) -> Error {
+    let group = group.to_owned();
+    let name = name.to_owned();
+    match (err, expected) {
+        (e, _) if e == topo_prop_errno_ETOPO_PROP_NOENT as c_int => {
+            Error::PropertyNotFound { group, name }
+        }
+        (e, Some(expected)) if e == topo_prop_errno_ETOPO_PROP_TYPE as c_int => {
+            Error::PropertyType {
+                group,
+                name,
+                expected,
+            }
+        }
+        _ => Error::Topo(topo_errmsg(err)),
+    }
+}
+
 /// Cast a `*mut illumos_nvpair_sys::nvlist_t` to `*mut libtopo_sys::nvlist_t`.
 /// See [`Fmri::as_raw_topo`] for why the cross-sys-crate cast is layout-safe.
 #[inline]
@@ -73,6 +100,32 @@ fn np_to_topo_nvl(p: *mut illumos_nvpair_sys::nvlist_t) -> *mut libtopo_sys::nvl
 #[inline]
 fn topo_to_np_nvl(p: *mut libtopo_sys::nvlist_t) -> *mut illumos_nvpair_sys::nvlist_t {
     p.cast()
+}
+
+/// Copy out a string libtopo allocated against `hdl`, then free it.
+///
+/// # Safety
+///
+/// `s` must be a non-null NUL-terminated string allocated by libtopo
+/// against `hdl` and not yet freed. It is dangling after this call.
+unsafe fn adopt_topo_string(hdl: *mut topo_hdl_t, s: *mut c_char) -> String {
+    // SAFETY: s is a live NUL-terminated string (caller-upheld).
+    let owned = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+    // SAFETY: libtopo allocated s against hdl (caller-upheld).
+    unsafe { topo_hdl_strfree(hdl, s) };
+    owned
+}
+
+/// Take ownership of an nvlist libtopo handed over.
+///
+/// # Safety
+///
+/// `nvl` must be non-null and exclusively owned by the caller. It is
+/// freed by `nvlist_free` when the returned value drops.
+unsafe fn adopt_topo_nvlist(nvl: *mut libtopo_sys::nvlist_t) -> OwnedNvList {
+    // SAFETY: nvl is owned (caller-upheld); topo_to_np_nvl re-types the
+    // same pointer, see Fmri::as_raw_topo.
+    unsafe { OwnedNvList::from_raw(topo_to_np_nvl(nvl)) }
 }
 
 /// Best-effort copy of an nvpair's name, used when constructing
@@ -122,6 +175,21 @@ pub enum Error {
     /// A libtopo call returned a non-zero error code.
     #[error("libtopo: {0}")]
     Topo(String),
+
+    /// No property with this group and name exists on the node
+    /// (libtopo `ETOPO_PROP_NOENT`).
+    #[error("property {group}/{name} not found")]
+    PropertyNotFound { group: String, name: String },
+
+    /// The property exists but is not the type the caller asked for
+    /// (libtopo `ETOPO_PROP_TYPE`). `expected` is libtopo's name for the
+    /// requested type, e.g. `"uint32"`.
+    #[error("property {group}/{name} is not a {expected}")]
+    PropertyType {
+        group: String,
+        name: String,
+        expected: &'static str,
+    },
 
     /// A Rust string passed to a C API contained an interior NUL byte.
     #[error("interior nul byte in string argument")]
@@ -275,15 +343,9 @@ impl TopoHdl {
         if rc != 0 || out.is_null() {
             return Err(Error::Topo(topo_errmsg(err)));
         }
-        // SAFETY: out is non-null per the check above and points to a libtopo-
-        // allocated NUL-terminated string we copy out before freeing.
-        let s = unsafe { CStr::from_ptr(out) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: out was allocated by topo_fmri_nvl2str against this same
-        // handle; topo_hdl_strfree is the documented free path.
-        unsafe { topo_hdl_strfree(self.hdl, out) };
-        Ok(s)
+        // SAFETY: out is non-null and was allocated by topo_fmri_nvl2str
+        // against self.hdl.
+        Ok(unsafe { adopt_topo_string(self.hdl, out) })
     }
 
     /// Parse a string FMRI into an [`Fmri`] via `topo_fmri_str2nvl`.
@@ -297,11 +359,8 @@ impl TopoHdl {
         if rc != 0 || out.is_null() {
             return Err(Error::Topo(topo_errmsg(err)));
         }
-        // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership
-        // of the nvlist (caller frees via nvlist_free, which OwnedNvList's
-        // Drop does). topo_to_np_nvl reinterprets between sys-crate nvlist_t
-        // types — see Fmri::as_raw_topo for why this is layout-safe.
-        Ok(Fmri(unsafe { OwnedNvList::from_raw(topo_to_np_nvl(out)) }))
+        // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
+        Ok(Fmri(unsafe { adopt_topo_nvlist(out) }))
     }
 
     /// Is the resource named by `fmri` present? Via `topo_fmri_present`.
@@ -381,15 +440,9 @@ impl<'h> Snapshot<'h> {
         if uuid_c.is_null() {
             return Err(Error::Topo(topo_errmsg(err)));
         }
-        // SAFETY: uuid_c is non-null per the check above; libtopo owns the
-        // memory until topo_hdl_strfree below. We copy out before freeing.
-        let uuid = unsafe { CStr::from_ptr(uuid_c) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: uuid_c was allocated by topo_snap_hold against this same
-        // handle; topo_hdl_strfree is the documented free path; we have not
-        // stored the pointer elsewhere.
-        unsafe { topo_hdl_strfree(hdl.hdl, uuid_c) };
+        // SAFETY: uuid_c is non-null and was allocated by topo_snap_hold
+        // against hdl.hdl.
+        let uuid = unsafe { adopt_topo_string(hdl.hdl, uuid_c) };
         Ok(Self { hdl, uuid })
     }
 
@@ -623,8 +676,7 @@ impl<'cb> Node<'cb> {
             return Err(Error::Topo(topo_errmsg(err)));
         }
         // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
-        // topo_to_np_nvl re-types the same pointer — see Fmri::as_raw_topo.
-        Ok(Fmri(unsafe { OwnedNvList::from_raw(topo_to_np_nvl(out)) }))
+        Ok(Fmri(unsafe { adopt_topo_nvlist(out) }))
     }
 
     /// The node's ASRU (Automatic Service Reduction Unit) FMRI via
@@ -643,8 +695,7 @@ impl<'cb> Node<'cb> {
             return Err(Error::Topo(topo_errmsg(err)));
         }
         // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
-        // topo_to_np_nvl re-types the same pointer — see Fmri::as_raw_topo.
-        Ok(Fmri(unsafe { OwnedNvList::from_raw(topo_to_np_nvl(out)) }))
+        Ok(Fmri(unsafe { adopt_topo_nvlist(out) }))
     }
 
     /// The node's FRU (Field Replaceable Unit) FMRI via `topo_node_fru`.
@@ -662,8 +713,7 @@ impl<'cb> Node<'cb> {
             return Err(Error::Topo(topo_errmsg(err)));
         }
         // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
-        // topo_to_np_nvl re-types the same pointer — see Fmri::as_raw_topo.
-        Ok(Fmri(unsafe { OwnedNvList::from_raw(topo_to_np_nvl(out)) }))
+        Ok(Fmri(unsafe { adopt_topo_nvlist(out) }))
     }
 
     /// The node's human-readable label (if any) via `topo_node_label`.
@@ -676,15 +726,9 @@ impl<'cb> Node<'cb> {
         if rc != 0 || out.is_null() {
             return Err(Error::Topo(topo_errmsg(err)));
         }
-        // SAFETY: out is non-null per the check above and points to a
-        // libtopo-allocated NUL-terminated string we copy out before freeing.
-        let s = unsafe { CStr::from_ptr(out) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: out was allocated by topo_node_label against this handle;
-        // topo_hdl_strfree is the documented free path.
-        unsafe { topo_hdl_strfree(self.hdl, out) };
-        Ok(s)
+        // SAFETY: out is non-null and was allocated by topo_node_label
+        // against self.hdl.
+        Ok(unsafe { adopt_topo_string(self.hdl, out) })
     }
 
     /// Read one property by group and name.
@@ -694,6 +738,13 @@ impl<'cb> Node<'cb> {
     /// for a specific type up front. Properties of types this crate does
     /// not yet model (e.g. `TOPO_TYPE_FMRI_ARRAY`) appear as
     /// [`PropValue::Unknown`].
+    ///
+    /// Returns [`Error::PropertyNotFound`] if no such property exists.
+    ///
+    /// Callers that already know the property's type can use the typed
+    /// getters instead ([`Node::property_u32`], [`Node::property_string`],
+    /// and friends), which return [`Error::PropertyType`] on a mismatch
+    /// rather than a variant to check.
     pub fn property(&self, group: &str, name: &str) -> Result<PropValue, Error> {
         let g = CString::new(group)?;
         let n = CString::new(name)?;
@@ -712,17 +763,136 @@ impl<'cb> Node<'cb> {
             )
         };
         if rc != 0 || out.is_null() {
-            return Err(Error::Topo(topo_errmsg(err)));
+            return Err(prop_error(err, group, name, None));
         }
-        // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership
-        // of the nvlist. topo_to_np_nvl re-types the same pointer — see
-        // Fmri::as_raw_topo.
-        let owned = unsafe { OwnedNvList::from_raw(topo_to_np_nvl(out)) };
+        // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
+        let owned = unsafe { adopt_topo_nvlist(out) };
         // SAFETY: owned holds the only reference to the property nvlist for
         // the duration of parse_property; parse_property reads but does not
         // free.
         let prop = unsafe { parse_property(owned.as_raw()) }?;
         Ok(prop.value)
+    }
+
+    /// Read a `TOPO_TYPE_INT32` property via `topo_prop_get_int32`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not an int32.
+    pub fn property_i32(&self, group: &str, name: &str) -> Result<i32, Error> {
+        self.scalar_property(group, name, "int32", topo_prop_get_int32)
+    }
+
+    /// Read a `TOPO_TYPE_UINT32` property via `topo_prop_get_uint32`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not a uint32.
+    pub fn property_u32(&self, group: &str, name: &str) -> Result<u32, Error> {
+        self.scalar_property(group, name, "uint32", topo_prop_get_uint32)
+    }
+
+    /// Read a `TOPO_TYPE_INT64` property via `topo_prop_get_int64`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not an int64. A
+    /// `TOPO_TYPE_TIME` property is a distinct type to libtopo and is not
+    /// readable this way; use [`Node::property`] and [`PropValue::Time`].
+    pub fn property_i64(&self, group: &str, name: &str) -> Result<i64, Error> {
+        self.scalar_property(group, name, "int64", topo_prop_get_int64)
+    }
+
+    /// Read a `TOPO_TYPE_UINT64` property via `topo_prop_get_uint64`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not a uint64. A
+    /// `TOPO_TYPE_SIZE` property is a distinct type to libtopo and is not
+    /// readable this way; use [`Node::property`] and [`PropValue::Size`].
+    pub fn property_u64(&self, group: &str, name: &str) -> Result<u64, Error> {
+        self.scalar_property(group, name, "uint64", topo_prop_get_uint64)
+    }
+
+    /// Read a `TOPO_TYPE_DOUBLE` property via `topo_prop_get_double`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not a double.
+    pub fn property_f64(&self, group: &str, name: &str) -> Result<f64, Error> {
+        self.scalar_property(group, name, "double", topo_prop_get_double)
+    }
+
+    /// Shared body of the fixed-size typed getters. `getter` is one of
+    /// libtopo's scalar `topo_prop_get_*` functions; its out-pointer type
+    /// fixes `T`, so each wrapper can only be paired with the getter that
+    /// writes its own type. `expected` is libtopo's name for that type,
+    /// reported in [`Error::PropertyType`].
+    fn scalar_property<T: Default>(
+        &self,
+        group: &str,
+        name: &str,
+        expected: &'static str,
+        getter: unsafe extern "C" fn(
+            *mut tnode_t,
+            *const c_char,
+            *const c_char,
+            *mut T,
+            *mut c_int,
+        ) -> c_int,
+    ) -> Result<T, Error> {
+        let g = CString::new(group)?;
+        let n = CString::new(name)?;
+        let mut out = T::default();
+        let mut err: c_int = 0;
+        // SAFETY: self.tnode is valid for 'cb; g and n are NUL-terminated
+        // and outlive the call; out and err are live locals; getter is a
+        // libtopo scalar topo_prop_get_* function, writing one T to out on
+        // success and one c_int to err on failure.
+        let rc = unsafe { getter(self.tnode, g.as_ptr(), n.as_ptr(), &mut out, &mut err) };
+        if rc != 0 {
+            return Err(prop_error(err, group, name, Some(expected)));
+        }
+        Ok(out)
+    }
+
+    /// Read a `TOPO_TYPE_STRING` property via `topo_prop_get_string`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not a string. Non-UTF-8
+    /// bytes are replaced, matching [`Node::label`].
+    pub fn property_string(&self, group: &str, name: &str) -> Result<String, Error> {
+        let g = CString::new(group)?;
+        let n = CString::new(name)?;
+        let mut out: *mut c_char = std::ptr::null_mut();
+        let mut err: c_int = 0;
+        // SAFETY: self.tnode is valid for 'cb; g and n are NUL-terminated
+        // and alive for the call; out and err are owned out-params;
+        // rc/out are checked below.
+        let rc =
+            unsafe { topo_prop_get_string(self.tnode, g.as_ptr(), n.as_ptr(), &mut out, &mut err) };
+        if rc != 0 || out.is_null() {
+            return Err(prop_error(err, group, name, Some("string")));
+        }
+        // SAFETY: out is non-null and was allocated by topo_prop_get_string
+        // against self.hdl.
+        Ok(unsafe { adopt_topo_string(self.hdl, out) })
+    }
+
+    /// Read a `TOPO_TYPE_FMRI` property via `topo_prop_get_fmri`.
+    ///
+    /// Returns [`Error::PropertyNotFound`] if the property is missing and
+    /// [`Error::PropertyType`] if it is not an FMRI.
+    pub fn property_fmri(&self, group: &str, name: &str) -> Result<Fmri, Error> {
+        let g = CString::new(group)?;
+        let n = CString::new(name)?;
+        let mut out: *mut libtopo_sys::nvlist_t = std::ptr::null_mut();
+        let mut err: c_int = 0;
+        // SAFETY: self.tnode is valid for 'cb; g and n are NUL-terminated
+        // and alive for the call; out and err are owned out-params;
+        // rc/out are checked below.
+        let rc =
+            unsafe { topo_prop_get_fmri(self.tnode, g.as_ptr(), n.as_ptr(), &mut out, &mut err) };
+        if rc != 0 || out.is_null() {
+            return Err(prop_error(err, group, name, Some("fmri")));
+        }
+        // SAFETY: rc == 0 and out is non-null; libtopo transferred ownership.
+        Ok(Fmri(unsafe { adopt_topo_nvlist(out) }))
     }
 
     /// Enumerate every property group and property on this node.
@@ -734,9 +904,8 @@ impl<'cb> Node<'cb> {
         if raw.is_null() {
             return Err(Error::Topo(topo_errmsg(err)));
         }
-        // SAFETY: raw is non-null; libtopo transferred ownership. topo_to_np_nvl
-        // re-types the same pointer — see Fmri::as_raw_topo.
-        let owned = unsafe { OwnedNvList::from_raw(topo_to_np_nvl(raw)) };
+        // SAFETY: raw is non-null; libtopo transferred ownership.
+        let owned = unsafe { adopt_topo_nvlist(raw) };
         let mut groups = Vec::new();
         let mut nvp: *mut nvpair_t = std::ptr::null_mut();
         loop {
@@ -1682,7 +1851,135 @@ mod tests {
         let mut checked = false;
         match snap.walk(Scheme::Hc, |node| {
             let r = node.property("nope-group", "nope-name");
-            assert!(matches!(r, Err(Error::Topo(_))), "expected Err, got {r:?}");
+            assert!(
+                matches!(
+                    &r,
+                    Err(Error::PropertyNotFound { group, name })
+                        if group == "nope-group" && name == "nope-name"
+                ),
+                "expected PropertyNotFound, got {r:?}"
+            );
+            checked = true;
+            Ok(WalkAction::Stop)
+        }) {
+            Ok(()) => assert!(checked, "expected to inspect at least one node"),
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
+    }
+
+    /// Every typed getter agrees with the `PropValue` that
+    /// `property_groups` reports for the same property. Walks until it
+    /// has seen an FMRI-typed property, which every node carries as
+    /// `protocol/resource`, and reports which other types it exercised.
+    #[test]
+    fn typed_getters_match_property_groups() {
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let mut seen: Vec<&'static str> = Vec::new();
+        let mut nodes = 0;
+        let result = snap.walk(Scheme::Hc, |node| {
+            nodes += 1;
+            for pg in node.property_groups()? {
+                for p in pg.properties {
+                    let (g, n) = (pg.name.as_str(), p.name.as_str());
+                    // Name the property in any getter failure.
+                    let ctx = |e: Error| Error::Topo(format!("{g}/{n}: {e}"));
+                    let kind = match p.value {
+                        PropValue::Int32(v) => {
+                            assert_eq!(node.property_i32(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "i32"
+                        }
+                        PropValue::UInt32(v) => {
+                            assert_eq!(node.property_u32(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "u32"
+                        }
+                        PropValue::Int64(v) => {
+                            assert_eq!(node.property_i64(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "i64"
+                        }
+                        PropValue::UInt64(v) => {
+                            assert_eq!(node.property_u64(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "u64"
+                        }
+                        PropValue::Double(v) => {
+                            assert_eq!(node.property_f64(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "f64"
+                        }
+                        PropValue::String(v) => {
+                            assert_eq!(node.property_string(g, n).map_err(ctx)?, v, "{g}/{n}");
+                            "string"
+                        }
+                        PropValue::Fmri(v) => {
+                            let got = node.property_fmri(g, n).map_err(ctx)?;
+                            assert_eq!(
+                                hdl.fmri_to_string(&got)?,
+                                hdl.fmri_to_string(&v)?,
+                                "{g}/{n}"
+                            );
+                            "fmri"
+                        }
+                        _ => continue,
+                    };
+                    if !seen.contains(&kind) {
+                        seen.push(kind);
+                    }
+                }
+            }
+            // Keep going until string, i32, and u32 properties have been
+            // checked alongside the FMRI, or the tree runs out.
+            let done = ["fmri", "string", "i32", "u32"]
+                .iter()
+                .all(|k| seen.contains(k));
+            Ok(if done {
+                WalkAction::Stop
+            } else {
+                WalkAction::Continue
+            })
+        });
+        match result {
+            Ok(()) => {
+                assert!(nodes > 0, "expected to inspect at least one node");
+                assert!(
+                    seen.contains(&"fmri"),
+                    "no FMRI property seen in {nodes} nodes"
+                );
+                eprintln!("typed getters exercised across {nodes} nodes: {seen:?}");
+            }
+            Err(e) if is_empty_topology(&e) => {
+                eprintln!("skipping: empty hc topology");
+            }
+            Err(e) => panic!("walk failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn typed_getter_type_mismatch_is_error() {
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let mut checked = false;
+        match snap.walk(Scheme::Hc, |node| {
+            // protocol/resource is an FMRI on every node.
+            let wrong_type = node.property_u32("protocol", "resource");
+            assert!(
+                matches!(
+                    &wrong_type,
+                    Err(Error::PropertyType { group, name, expected })
+                        if group == "protocol" && name == "resource" && *expected == "uint32"
+                ),
+                "expected PropertyType, got {wrong_type:?}"
+            );
+            let missing = node.property_string("nope-group", "nope-name");
+            assert!(
+                matches!(
+                    &missing,
+                    Err(Error::PropertyNotFound { group, name })
+                        if group == "nope-group" && name == "nope-name"
+                ),
+                "expected PropertyNotFound, got {missing:?}"
+            );
             checked = true;
             Ok(WalkAction::Stop)
         }) {
