@@ -1,5 +1,0 @@
-[target.x86_64-unknown-illumos]
-rustflags = ["-C", "link-arg=-R/usr/lib/fm/amd64"]
-# Doctests do not receive `rustflags`, so the doctest binary needs the same
-# RPATH separately or it fails to load /usr/lib/fm/amd64/libtopo.so.1.
-rustdocflags = ["-C", "link-arg=-R/usr/lib/fm/amd64"]
