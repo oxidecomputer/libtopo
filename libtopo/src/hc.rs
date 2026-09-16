@@ -47,15 +47,19 @@ const fn from_c(bytes: &'static [u8]) -> &'static str {
     }
 }
 
-/// Re-export each named `libtopo-sys` byte-array constant as a `&str`.
+/// Re-export each named `libtopo-sys` byte-array constant as a `&str`, and
+/// list the names so tests can check them against the header.
 macro_rules! hc_str {
     ($($name:ident,)*) => {
         $(pub const $name: &str = from_c(libtopo_sys::$name);)*
+
+        #[cfg(test)]
+        pub(crate) const ALL: &[&str] = &[$(stringify!($name),)*];
     };
 }
 
-// Allowable hardware component names for hc FMRIs.
 hc_str! {
+    // Allowable hardware component names for hc FMRIs.
     BANK,
     BAY,
     BLADE,
@@ -129,10 +133,8 @@ hc_str! {
     USB_DEVICE,
     XAUI,
     XFP,
-}
 
-// Allowable hc node property group and property names.
-hc_str! {
+    // Allowable hc node property group and property names.
     TOPO_PGROUP_IO,
     TOPO_IO_DEVTYPE,
     TOPO_IO_DRIVER,

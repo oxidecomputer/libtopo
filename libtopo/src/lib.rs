@@ -1431,6 +1431,7 @@ unsafe fn parse_property_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     // ── Unit tests (no libtopo runtime needed) ──
 
@@ -1458,6 +1459,22 @@ mod tests {
                 .to_str()
                 .unwrap(),
             hc::NVME
+        );
+    }
+
+    #[test]
+    fn hc_names_match_header_string_macros() {
+        let header: BTreeSet<&str> = include_str!("topo_hc_names.txt")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let ours: BTreeSet<&str> = hc::ALL.iter().copied().collect();
+        let missing: Vec<_> = header.difference(&ours).collect();
+        let extra: Vec<_> = ours.difference(&header).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "libtopo::hc is out of sync with topo_hc.h: \
+             missing {missing:?}, extra {extra:?}"
         );
     }
 

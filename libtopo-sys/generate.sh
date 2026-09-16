@@ -16,3 +16,14 @@ bindgen wrapper.h \
 # continuation indents.
 cargo fmt -p libtopo-sys
 
+# Record which string macros <fm/topo_hc.h> defines, so libtopo's tests can
+# check that libtopo::hc re-exports every one of them.
+hc_header=$(echo '#include <fm/topo_hc.h>' | "${CC:-gcc}" -E -M -x c - \
+    | tr -s ' \\' '\n' | grep '/fm/topo_hc\.h$')
+{
+    echo "# String macros defined by <fm/topo_hc.h>."
+    echo "# Written by libtopo-sys/generate.sh; do not edit by hand."
+    grep -E '^#define[[:space:]]+[A-Za-z0-9_]+[[:space:]]+"' "$hc_header" \
+        | awk '{ print $2 }'
+} > ../libtopo/src/topo_hc_names.txt
+
