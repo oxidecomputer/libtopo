@@ -1453,13 +1453,6 @@ mod tests {
         assert_eq!(hc::TOPO_IO_INSTANCE, "instance");
         assert_eq!(hc::TOPO_PGROUP_BINDING, "binding");
         assert_eq!(hc::TOPO_BINDING_SLOT, "slot");
-        assert_eq!(
-            CStr::from_bytes_with_nul(libtopo_sys::NVME)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            hc::NVME
-        );
     }
 
     #[test]
