@@ -8,19 +8,22 @@
 //! match the C macros exactly.
 //!
 //! Compare node names against [`Node::name`](crate::Node::name) and pass
-//! group and property names to [`Node::property`](crate::Node::property):
+//! group and property names to [`Node::property`](crate::Node::property)
+//! or the typed getters such as
+//! [`Node::property_u32`](crate::Node::property_u32):
 //!
 //! ```no_run
-//! use libtopo::{PropValue, Scheme, TopoHdl, WalkAction, hc};
+//! use libtopo::{Error, Scheme, TopoHdl, WalkAction, hc};
 //!
 //! let hdl = TopoHdl::open()?;
 //! let snap = hdl.snapshot()?;
 //! snap.walk(Scheme::Hc, |node| {
 //!     if node.name() == hc::NVME {
-//!         if let PropValue::UInt32(inst) =
-//!             node.property(hc::TOPO_PGROUP_IO, hc::TOPO_IO_INSTANCE)?
-//!         {
-//!             println!("nvme{inst}");
+//!         // Not every nvme node has a driver instance bound.
+//!         match node.property_u32(hc::TOPO_PGROUP_IO, hc::TOPO_IO_INSTANCE) {
+//!             Ok(inst) => println!("nvme{inst}"),
+//!             Err(Error::PropertyNotFound { .. }) => {}
+//!             Err(e) => return Err(e),
 //!         }
 //!     }
 //!     Ok(WalkAction::Continue)
