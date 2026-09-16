@@ -28,17 +28,19 @@
 //! # Ok::<(), libtopo::Error>(())
 //! ```
 
+use std::ffi::CStr;
+
 /// Convert a NUL-terminated `libtopo-sys` string constant to `&str`.
 ///
 /// Evaluated in `const` context, so a constant that is not NUL-terminated
 /// or not UTF-8 fails the build rather than panicking at runtime.
 const fn from_c(bytes: &'static [u8]) -> &'static str {
-    let Some((0, body)) = bytes.split_last() else {
-        panic!("libtopo-sys string constant is not NUL-terminated");
-    };
-    match str::from_utf8(body) {
-        Ok(s) => s,
-        Err(_) => panic!("libtopo-sys string constant is not UTF-8"),
+    match CStr::from_bytes_with_nul(bytes) {
+        Ok(c) => match c.to_str() {
+            Ok(s) => s,
+            Err(_) => panic!("libtopo-sys string constant is not UTF-8"),
+        },
+        Err(_) => panic!("libtopo-sys string constant is not NUL-terminated"),
     }
 }
 
