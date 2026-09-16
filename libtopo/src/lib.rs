@@ -243,24 +243,32 @@ pub enum Scheme {
 impl Scheme {
     /// The scheme name as a borrowed C string (e.g. `c"hc"` for [`Scheme::Hc`]).
     pub fn as_cstr(self) -> &'static CStr {
-        let bytes: &'static [u8] = match self {
-            Scheme::Hc => FM_FMRI_SCHEME_HC,
-            Scheme::Mem => FM_FMRI_SCHEME_MEM,
-            Scheme::Cpu => FM_FMRI_SCHEME_CPU,
-            Scheme::Dev => FM_FMRI_SCHEME_DEV,
-            Scheme::Mod => FM_FMRI_SCHEME_MOD,
-            Scheme::Svc => FM_FMRI_SCHEME_SVC,
-            Scheme::Sw => FM_FMRI_SCHEME_SW,
-            Scheme::Zfs => FM_FMRI_SCHEME_ZFS,
-            Scheme::Pcie => FM_FMRI_SCHEME_PCIE,
-            Scheme::Path => FM_FMRI_SCHEME_PATH,
-            Scheme::Fmd => FM_FMRI_SCHEME_FMD,
-            Scheme::Pkg => FM_FMRI_SCHEME_PKG,
-            Scheme::Legacy => FM_FMRI_SCHEME_LEGACY,
-        };
-        // The bindgen-generated FM_FMRI_SCHEME_* constants are nul-terminated
-        // byte arrays sourced from <sys/fm/protocol.h>.
-        CStr::from_bytes_with_nul(bytes).expect("FM_FMRI_SCHEME_* lacks NUL terminator")
+        match self {
+            Scheme::Hc => const { sys_cstr(FM_FMRI_SCHEME_HC) },
+            Scheme::Mem => const { sys_cstr(FM_FMRI_SCHEME_MEM) },
+            Scheme::Cpu => const { sys_cstr(FM_FMRI_SCHEME_CPU) },
+            Scheme::Dev => const { sys_cstr(FM_FMRI_SCHEME_DEV) },
+            Scheme::Mod => const { sys_cstr(FM_FMRI_SCHEME_MOD) },
+            Scheme::Svc => const { sys_cstr(FM_FMRI_SCHEME_SVC) },
+            Scheme::Sw => const { sys_cstr(FM_FMRI_SCHEME_SW) },
+            Scheme::Zfs => const { sys_cstr(FM_FMRI_SCHEME_ZFS) },
+            Scheme::Pcie => const { sys_cstr(FM_FMRI_SCHEME_PCIE) },
+            Scheme::Path => const { sys_cstr(FM_FMRI_SCHEME_PATH) },
+            Scheme::Fmd => const { sys_cstr(FM_FMRI_SCHEME_FMD) },
+            Scheme::Pkg => const { sys_cstr(FM_FMRI_SCHEME_PKG) },
+            Scheme::Legacy => const { sys_cstr(FM_FMRI_SCHEME_LEGACY) },
+        }
+    }
+}
+
+/// Borrow a NUL-terminated `libtopo-sys` string constant as a C string.
+///
+/// Evaluated in `const` context, so a constant that is not NUL-terminated
+/// fails the build.
+const fn sys_cstr(bytes: &'static [u8]) -> &'static CStr {
+    match CStr::from_bytes_with_nul(bytes) {
+        Ok(s) => s,
+        Err(_) => panic!("libtopo-sys string constant is not NUL-terminated"),
     }
 }
 
