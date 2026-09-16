@@ -1573,18 +1573,27 @@ mod tests {
         matches!(err, Error::Topo(msg) if msg.contains("empty topology"))
     }
 
-    /// Walk the hc tree and capture the first node's resource FMRI, or
-    /// return `Ok(None)` if the topology is empty.
-    fn first_hc_resource(snap: &Snapshot<'_>) -> Result<Option<Fmri>, Error> {
-        let mut captured: Option<Fmri> = None;
+    /// Walk the hc tree and apply `f` to the first node, or return
+    /// `Ok(None)` if the topology is empty.
+    fn first_hc_node<T>(
+        snap: &Snapshot<'_>,
+        mut f: impl FnMut(Node<'_>) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
+        let mut captured: Option<T> = None;
         match snap.walk(Scheme::Hc, |node| {
-            captured = Some(node.resource()?);
+            captured = Some(f(node)?);
             Ok(WalkAction::Stop)
         }) {
             Ok(()) => Ok(captured),
             Err(e) if is_empty_topology(&e) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The first hc node's resource FMRI, or `Ok(None)` if the topology is
+    /// empty.
+    fn first_hc_resource(snap: &Snapshot<'_>) -> Result<Option<Fmri>, Error> {
+        first_hc_node(snap, |node| node.resource())
     }
 
     #[test]
@@ -1613,24 +1622,18 @@ mod tests {
     fn walk_root_node_name_is_hc_constant() {
         let hdl = TopoHdl::open().expect("failed to open");
         let snap = hdl.snapshot().expect("failed to take snapshot");
-        let mut checked = false;
-        match snap.walk(Scheme::Hc, |node| {
-            // The hc tree is rooted at a chassis (or motherboard on a
-            // bare board), both of which topo_hc.h names.
-            let name = node.name();
-            assert!(
-                name == hc::CHASSIS || name == hc::MOTHERBOARD,
-                "unexpected hc root node name {name:?}"
-            );
-            checked = true;
-            Ok(WalkAction::Stop)
-        }) {
-            Ok(()) => assert!(checked, "expected to inspect at least one node"),
-            Err(e) if is_empty_topology(&e) => {
-                eprintln!("skipping: empty hc topology");
-            }
-            Err(e) => panic!("walk failed: {e}"),
-        }
+        let Some(name) =
+            first_hc_node(&snap, |node| Ok(node.name().into_owned())).expect("walk failed")
+        else {
+            eprintln!("skipping: empty hc topology");
+            return;
+        };
+        // Top-level hc ranges declared by the stock and Oxide platform maps.
+        const ROOTS: &[&str] = &[hc::CHASSIS, hc::MOTHERBOARD, hc::SES_ENCLOSURE];
+        assert!(
+            ROOTS.contains(&name.as_str()),
+            "unexpected hc root node name {name:?}"
+        );
     }
 
     #[test]
