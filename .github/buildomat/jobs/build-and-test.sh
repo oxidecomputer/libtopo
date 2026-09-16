@@ -34,3 +34,7 @@ pfexec ptime -m env \
 	UMEM_DEBUG=default,audit=16,contents \
 	UMEM_LOGGING=transaction \
 	cargo nextest run
+
+banner doctest
+# nextest does not run doctests, so build and run them separately.
+pfexec ptime -m cargo test --doc

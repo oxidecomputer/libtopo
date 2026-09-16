@@ -1,0 +1,354 @@
+//! String constants from `<fm/topo_hc.h>`: the hc-scheme node names and
+//! the property-group and property names libtopo's enumerators publish on
+//! hc nodes.
+//!
+//! Each constant is the `&str` form of the NUL-terminated byte array that
+//! `libtopo-sys` binds from the header, converted at compile time, so the
+//! values stay tied to the header rather than being retyped here. Names
+//! match the C macros exactly.
+//!
+//! Compare node names against [`Node::name`](crate::Node::name) and pass
+//! group and property names to [`Node::property`](crate::Node::property)
+//! or the typed getters such as
+//! [`Node::property_u32`](crate::Node::property_u32):
+//!
+//! ```no_run
+//! use libtopo::{Error, Scheme, TopoHdl, WalkAction, hc};
+//!
+//! let hdl = TopoHdl::open()?;
+//! let snap = hdl.snapshot()?;
+//! snap.walk(Scheme::Hc, |node| {
+//!     if node.name() == hc::NVME {
+//!         // Not every nvme node has a driver instance bound.
+//!         match node.property_u32(hc::TOPO_PGROUP_IO, hc::TOPO_IO_INSTANCE) {
+//!             Ok(inst) => println!("nvme{inst}"),
+//!             Err(Error::PropertyNotFound { .. }) => {}
+//!             Err(e) => return Err(e),
+//!         }
+//!     }
+//!     Ok(WalkAction::Continue)
+//! })?;
+//! # Ok::<(), libtopo::Error>(())
+//! ```
+
+use crate::sys_cstr;
+
+/// Convert a NUL-terminated `libtopo-sys` string constant to `&str`.
+///
+/// Evaluated in `const` context, so a constant that is not NUL-terminated
+/// or not UTF-8 fails the build rather than panicking at runtime.
+const fn from_c(bytes: &'static [u8]) -> &'static str {
+    match sys_cstr(bytes).to_str() {
+        Ok(s) => s,
+        Err(_) => panic!("libtopo-sys string constant is not UTF-8"),
+    }
+}
+
+/// Re-export each named `libtopo-sys` byte-array constant as a `&str`, and
+/// list the names so tests can check them against the header.
+macro_rules! hc_str {
+    ($($name:ident,)*) => {
+        $(pub const $name: &str = from_c(libtopo_sys::$name);)*
+
+        #[cfg(test)]
+        pub(crate) const ALL: &[&str] = &[$(stringify!($name),)*];
+    };
+}
+
+hc_str! {
+    // Allowable hardware component names for hc FMRIs.
+    BANK,
+    BAY,
+    BLADE,
+    BOARD,
+    BRANCH,
+    CACHE,
+    CCD,
+    CCX,
+    CMP,
+    CENTERPLANE,
+    CHASSIS,
+    CHIP,
+    CHIPSET,
+    CORE,
+    STRAND,
+    CHIP_SELECT,
+    CONTROLLER,
+    CPU,
+    CPUBOARD,
+    DIMM,
+    DISK,
+    DRAM,
+    DRAMCHANNEL,
+    FAN,
+    FANBOARD,
+    FANMODULE,
+    FANTRAY,
+    HBA,
+    HOSTBRIDGE,
+    IC,
+    INTERCONNECT,
+    IOBOARD,
+    IPORT,
+    MEMBOARD,
+    MEMORYBUFFER,
+    MEMORYCONTROL,
+    MICROCORE,
+    MOTHERBOARD,
+    NIU,
+    NIUFN,
+    NVME,
+    PCI_BUS,
+    PCI_DEVICE,
+    PCI_FUNCTION,
+    PCIEX_BUS,
+    PCIEX_DEVICE,
+    PCIEX_FUNCTION,
+    PCIEX_ROOT,
+    PCIEX_SWUP,
+    PCIEX_SWDWN,
+    PORT,
+    POWERBOARD,
+    POWERMODULE,
+    PSU,
+    RANK,
+    RECEPTACLE,
+    RISER,
+    ROTOR,
+    SASEXPANDER,
+    SHELF,
+    SCSI_DEVICE,
+    SES_ENCLOSURE,
+    SOCKET,
+    SLOT,
+    SMP_DEVICE,
+    SP,
+    SUBCHASSIS,
+    SYSTEMBOARD,
+    TRANSCEIVER,
+    UFM,
+    USB_DEVICE,
+    XAUI,
+    XFP,
+
+    // Allowable hc node property group and property names.
+    TOPO_PGROUP_IO,
+    TOPO_IO_DEVTYPE,
+    TOPO_IO_DRIVER,
+    TOPO_IO_INSTANCE,
+    TOPO_IO_MODULE,
+    TOPO_IO_DEV,
+    TOPO_IO_DEVID,
+    TOPO_IO_DEV_PATH,
+    TOPO_IO_AP_PATH,
+    TOPO_IO_PHYS_PATH,
+
+    TOPO_PGROUP_PCI,
+    TOPO_PCI_VENDID,
+    TOPO_PCI_VENDNM,
+    TOPO_PCI_SUBSYSNM,
+    TOPO_PCI_DEVID,
+    TOPO_PCI_DEVNM,
+    TOPO_PCI_EXCAP,
+    TOPO_PCI_BDF,
+    TOPO_PCI_CLASS,
+    TOPO_PCI_AADDR,
+
+    TOPO_PCI_MAX_WIDTH,
+    TOPO_PCI_CUR_WIDTH,
+    TOPO_PCI_MAX_SPEED,
+    TOPO_PCI_CUR_SPEED,
+    TOPO_PCI_SUP_SPEED,
+    TOPO_PCI_ADMIN_SPEED,
+
+    TOPO_PGROUP_BINDING,
+    TOPO_BINDING_OCCUPANT,
+    TOPO_BINDING_DRIVER,
+    TOPO_BINDING_DEVCTL,
+    TOPO_BINDING_ENCLOSURE,
+    TOPO_BINDING_SLOT,
+    TOPO_BINDING_PORT,
+    TOPO_BINDING_PARENT_DEV,
+
+    TOPO_PGROUP_STORAGE,
+    TOPO_STORAGE_INITIATOR_PORT,
+    TOPO_STORAGE_INITIATOR_PORT_PM,
+    TOPO_STORAGE_TARGET_PORT,
+    TOPO_STORAGE_TARGET_PORT_L0ID,
+    TOPO_STORAGE_TARGET_PORT_L0IDS,
+    TOPO_STORAGE_ATTACHED_PORT,
+    TOPO_STORAGE_TARGET_PORT_PM,
+    TOPO_STORAGE_ATTACHED_PORT_PM,
+    TOPO_STORAGE_DEVID,
+    TOPO_STORAGE_LUN64,
+    TOPO_STORAGE_DEVICE_TYPE,
+    TOPO_STORAGE_MANUFACTURER,
+    TOPO_STORAGE_MODEL,
+    TOPO_STORAGE_FIRMWARE_REV,
+    TOPO_STORAGE_SAS_PHY_MASK,
+    TOPO_STORAGE_SAS_CONNECTOR_TYPE,
+    TOPO_STORAGE_SIZE,
+
+    TOPO_PGROUP_SES,
+
+    TOPO_PROP_NODE_ID,
+    TOPO_PROP_TARGET_PATH,
+    TOPO_PROP_SES_DEVID,
+    TOPO_PROP_SES_DEV_PATH,
+    TOPO_PROP_SES_PHYS_PATH,
+    TOPO_PROP_SES_TARGET_PORT,
+
+    TOPO_PGROUP_SMP,
+
+    TOPO_PROP_SMP_DEVID,
+    TOPO_PROP_SMP_DEV_PATH,
+    TOPO_PROP_SMP_PHYS_PATH,
+    TOPO_PROP_SMP_TARGET_PORT,
+    TOPO_PROP_SAS_ADDR,
+    TOPO_PROP_PHY_COUNT,
+    TOPO_PROP_PATHS,
+    TOPO_PROP_CHASSIS_TYPE,
+    TOPO_PROP_SAS_PHY_MASK,
+    TOPO_PROP_SAS_CONNECTOR_TYPE,
+
+    TOPO_PGROUP_PORT,
+    TOPO_PROP_PORT_TYPE,
+    TOPO_PROP_PORT_TYPE_SFF,
+    TOPO_PROP_PORT_TYPE_USB,
+    TOPO_PROP_PORT_TYPE_UNKNOWN,
+
+    TOPO_PGROUP_TRANSCEIVER,
+    TOPO_PROP_TRANSCEIVER_TYPE,
+    TOPO_PROP_TRANSCEIVER_USABLE,
+
+    TOPO_PGROUP_SFF_TRANSCEIVER,
+    TOPO_PORT_SFF_TRANSCEIVER_VENDOR,
+    TOPO_PORT_SFF_TRANSCEIVER_PN,
+    TOPO_PORT_SFF_TRANSCEIVER_REV,
+    TOPO_PORT_SFF_TRANSCEIVER_SN,
+
+    TOPO_PGROUP_USB_PORT,
+    TOPO_PROP_USB_PORT_LPORTS,
+    TOPO_PROP_USB_PORT_VERSIONS,
+    TOPO_PROP_USB_PORT_TYPE,
+    TOPO_PROP_USB_PORT_ATTRIBUTES,
+    TOPO_PROP_USB_PORT_A_VISIBLE,
+    TOPO_PROP_USB_PORT_A_CONNECTED,
+    TOPO_PROP_USB_PORT_A_DISCONNECTED,
+    TOPO_PROP_USB_PORT_A_EXTERNAL,
+    TOPO_PROP_USB_PORT_A_INTERNAL,
+
+    TOPO_PGROUP_USB_PROPS,
+    TOPO_PGROUP_USB_PROPS_VID,
+    TOPO_PGROUP_USB_PROPS_PID,
+    TOPO_PGROUP_USB_PROPS_REV,
+    TOPO_PGROUP_USB_PROPS_VNAME,
+    TOPO_PGROUP_USB_PROPS_PNAME,
+    TOPO_PGROUP_USB_PROPS_SN,
+    TOPO_PGROUP_USB_PROPS_VERSION,
+    TOPO_PGROUP_USB_PROPS_SPEED,
+    TOPO_PGROUP_USB_PROPS_PORT,
+    TOPO_PGROUP_USB_PROPS_SUPPORTED_SPEEDS,
+    TOPO_PGROUP_USB_PROPS_MIN_SPEED,
+
+    TOPO_PROP_IPMI_ENTITY_ID,
+    TOPO_PROP_IPMI_ENTITY_INST,
+
+    TOPO_PROP_IPMI_ENTITY_LIST,
+
+    TOPO_PGROUP_SLOT,
+    TOPO_PROP_SLOT_TYPE,
+
+    TOPO_PGROUP_DIMM_SLOT,
+    TOPO_PROP_DIMM_SLOT_FORM,
+    TOPO_DIMM_SLOT_FORM_DIMM,
+    TOPO_DIMM_SLOT_FORM_SODIMM,
+    TOPO_DIMM_SLOT_FORM_FBDIMM,
+
+    TOPO_PGROUP_DIMM_PROPS,
+    TOPO_PROP_DIMM_TYPE,
+    TOPO_DIMM_TYPE_UNKNOWN,
+    TOPO_DIMM_TYPE_DDR,
+    TOPO_DIMM_TYPE_DDR2,
+    TOPO_DIMM_TYPE_DDR3,
+    TOPO_DIMM_TYPE_DDR4,
+    TOPO_DIMM_TYPE_DDR5,
+    TOPO_DIMM_TYPE_LPDDR,
+    TOPO_DIMM_TYPE_LPDDR2,
+    TOPO_DIMM_TYPE_LPDDR3,
+    TOPO_DIMM_TYPE_LPDDR4,
+    TOPO_DIMM_TYPE_LPDDR5,
+    TOPO_PROP_DIMM_MODULE_TYPE,
+    TOPO_PROP_DIMM_SIZE,
+    TOPO_PROP_DIMM_RANKS,
+    TOPO_PROP_DIMM_LRANKS,
+    TOPO_PROP_DIMM_STACK,
+    TOPO_PROP_DIMM_BANKS,
+    TOPO_PROP_DIMM_BANK_GROUPS,
+    TOPO_PROP_DIMM_BANKS_PER_GROUP,
+    TOPO_PROP_DIMM_SUBCHANNELS,
+    TOPO_PROP_DIMM_DATA_WIDTH,
+    TOPO_PROP_DIMM_ECC_WIDTH,
+    TOPO_PROP_DIMM_VDD,
+
+    TOPO_PGROUP_DIMM_COMPONENTS,
+    TOPO_PROP_DIMM_COMP,
+    TOPO_PROP_DIMM_COMP_DIE,
+    TOPO_PROP_DIMM_COMP_SPD,
+    TOPO_PROP_DIMM_COMP_TS,
+    TOPO_PROP_DIMM_COMP_HS,
+    TOPO_PROP_DIMM_COMP_PMIC,
+    TOPO_PROP_DIMM_COMP_CD,
+    TOPO_PROP_DIMM_COMP_RCD,
+    TOPO_PROP_DIMM_COMP_DB,
+    TOPO_PROP_DIMM_COMP_MRCD,
+    TOPO_PROP_DIMM_COMP_MDB,
+    TOPO_PROP_DIMM_COMP_DMB,
+
+    TOPO_PGROUP_MOTHERBOARD,
+    TOPO_PROP_MB_MANUFACTURER,
+    TOPO_PROP_MB_PRODUCT,
+    TOPO_PROP_MB_ASSET,
+    TOPO_PROP_MB_FIRMWARE_VENDOR,
+    TOPO_PROP_MB_FIRMWARE_RELDATE,
+
+    TOPO_PGROUP_UFM,
+    TOPO_PROP_UFM_DESCR,
+
+    TOPO_PGROUP_UFM_SLOT,
+    TOPO_PROP_UFM_SLOT_VERSION,
+    TOPO_PROP_UFM_SLOT_MODE,
+    TOPO_PROP_UFM_SLOT_ACTIVE,
+
+    TOPO_PGROUP_DATALINK,
+    TOPO_PGROUP_DATALINK_PMAC,
+    TOPO_PGROUP_DATALINK_LINK_SPEED,
+    TOPO_PGROUP_DATALINK_LINK_STATUS,
+    TOPO_PGROUP_DATALINK_LINK_STATUS_UP,
+    TOPO_PGROUP_DATALINK_LINK_STATUS_DOWN,
+    TOPO_PGROUP_DATALINK_LINK_STATUS_UNKNOWN,
+    TOPO_PGROUP_DATALINK_LINK_DUPLEX,
+    TOPO_PGROUP_DATALINK_LINK_DUPLEX_FULL,
+    TOPO_PGROUP_DATALINK_LINK_DUPLEX_HALF,
+    TOPO_PGROUP_DATALINK_LINK_DUPLEX_UNKNOWN,
+    TOPO_PGROUP_DATALINK_LINK_NAME,
+    TOPO_PGROUP_DATALINK_LINK_MEDIA,
+
+    TOPO_PGROUP_NVME,
+    TOPO_PROP_NVME_VER,
+    TOPO_PROP_NVME_NVM_CAPACITY,
+
+    TOPO_PGROUP_CACHE,
+    TOPO_PGROUP_CACHE_LEVEL,
+    TOPO_PGROUP_CACHE_WAYS,
+    TOPO_PGROUP_CACHE_SETS,
+    TOPO_PGROUP_CACHE_LINE_SIZE,
+    TOPO_PGROUP_CACHE_SIZE,
+    TOPO_PGROUP_CACHE_SYSTEM_ID,
+    TOPO_PGROUP_CACHE_TYPES,
+    TOPO_PGROUP_CACHE_TYPES_DATA,
+    TOPO_PGROUP_CACHE_TYPES_INSTR,
+    TOPO_PGROUP_CACHE_FLAGS,
+    TOPO_PGROUP_CACHE_FLAGS_UNIFIED,
+    TOPO_PGROUP_CACHE_FLAGS_FA,
+}

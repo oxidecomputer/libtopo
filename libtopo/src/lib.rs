@@ -1,7 +1,9 @@
 //! Idiomatic Rust bindings for illumos `libtopo`.
 //!
 //! See [`TopoHdl`] for the entry point. Open a handle, take a [`Snapshot`],
-//! then [`Snapshot::walk`] to visit the topology.
+//! then [`Snapshot::walk`] to visit the topology. The [`hc`] module holds
+//! the node, property-group, and property names from `<fm/topo_hc.h>` as
+//! `&str` constants.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -10,6 +12,8 @@ use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int, c_void};
 
 pub use illumos_nvpair::{NvError, NvList, NvValue, OwnedNvList};
+
+pub mod hc;
 
 use illumos_nvpair_sys::{
     boolean_t, data_type_t, data_type_t_DATA_TYPE_BOOLEAN_VALUE, data_type_t_DATA_TYPE_DOUBLE,
@@ -239,24 +243,32 @@ pub enum Scheme {
 impl Scheme {
     /// The scheme name as a borrowed C string (e.g. `c"hc"` for [`Scheme::Hc`]).
     pub fn as_cstr(self) -> &'static CStr {
-        let bytes: &'static [u8] = match self {
-            Scheme::Hc => FM_FMRI_SCHEME_HC,
-            Scheme::Mem => FM_FMRI_SCHEME_MEM,
-            Scheme::Cpu => FM_FMRI_SCHEME_CPU,
-            Scheme::Dev => FM_FMRI_SCHEME_DEV,
-            Scheme::Mod => FM_FMRI_SCHEME_MOD,
-            Scheme::Svc => FM_FMRI_SCHEME_SVC,
-            Scheme::Sw => FM_FMRI_SCHEME_SW,
-            Scheme::Zfs => FM_FMRI_SCHEME_ZFS,
-            Scheme::Pcie => FM_FMRI_SCHEME_PCIE,
-            Scheme::Path => FM_FMRI_SCHEME_PATH,
-            Scheme::Fmd => FM_FMRI_SCHEME_FMD,
-            Scheme::Pkg => FM_FMRI_SCHEME_PKG,
-            Scheme::Legacy => FM_FMRI_SCHEME_LEGACY,
-        };
-        // The bindgen-generated FM_FMRI_SCHEME_* constants are nul-terminated
-        // byte arrays sourced from <sys/fm/protocol.h>.
-        CStr::from_bytes_with_nul(bytes).expect("FM_FMRI_SCHEME_* lacks NUL terminator")
+        match self {
+            Scheme::Hc => const { sys_cstr(FM_FMRI_SCHEME_HC) },
+            Scheme::Mem => const { sys_cstr(FM_FMRI_SCHEME_MEM) },
+            Scheme::Cpu => const { sys_cstr(FM_FMRI_SCHEME_CPU) },
+            Scheme::Dev => const { sys_cstr(FM_FMRI_SCHEME_DEV) },
+            Scheme::Mod => const { sys_cstr(FM_FMRI_SCHEME_MOD) },
+            Scheme::Svc => const { sys_cstr(FM_FMRI_SCHEME_SVC) },
+            Scheme::Sw => const { sys_cstr(FM_FMRI_SCHEME_SW) },
+            Scheme::Zfs => const { sys_cstr(FM_FMRI_SCHEME_ZFS) },
+            Scheme::Pcie => const { sys_cstr(FM_FMRI_SCHEME_PCIE) },
+            Scheme::Path => const { sys_cstr(FM_FMRI_SCHEME_PATH) },
+            Scheme::Fmd => const { sys_cstr(FM_FMRI_SCHEME_FMD) },
+            Scheme::Pkg => const { sys_cstr(FM_FMRI_SCHEME_PKG) },
+            Scheme::Legacy => const { sys_cstr(FM_FMRI_SCHEME_LEGACY) },
+        }
+    }
+}
+
+/// Borrow a NUL-terminated `libtopo-sys` string constant as a C string.
+///
+/// Evaluated in `const` context, so a constant that is not NUL-terminated
+/// fails the build.
+const fn sys_cstr(bytes: &'static [u8]) -> &'static CStr {
+    match CStr::from_bytes_with_nul(bytes) {
+        Ok(s) => s,
+        Err(_) => panic!("libtopo-sys string constant is not NUL-terminated"),
     }
 }
 
@@ -1427,6 +1439,7 @@ unsafe fn parse_property_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     // ── Unit tests (no libtopo runtime needed) ──
 
@@ -1437,6 +1450,33 @@ mod tests {
         assert_eq!(Scheme::Cpu.as_cstr().to_str().unwrap(), "cpu");
         assert_eq!(Scheme::Sw.as_cstr().to_str().unwrap(), "sw");
         assert_eq!(Scheme::Legacy.as_cstr().to_str().unwrap(), "legacy-hc");
+    }
+
+    #[test]
+    fn hc_constants_are_header_strings() {
+        assert_eq!(hc::NVME, "nvme");
+        assert_eq!(hc::BAY, "bay");
+        assert_eq!(hc::SLOT, "slot");
+        assert_eq!(hc::TOPO_PGROUP_IO, "io");
+        assert_eq!(hc::TOPO_IO_INSTANCE, "instance");
+        assert_eq!(hc::TOPO_PGROUP_BINDING, "binding");
+        assert_eq!(hc::TOPO_BINDING_SLOT, "slot");
+    }
+
+    #[test]
+    fn hc_names_match_header_string_macros() {
+        let header: BTreeSet<&str> = include_str!("topo_hc_names.txt")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let ours: BTreeSet<&str> = hc::ALL.iter().copied().collect();
+        let missing: Vec<_> = header.difference(&ours).collect();
+        let extra: Vec<_> = ours.difference(&header).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "libtopo::hc is out of sync with topo_hc.h: \
+             missing {missing:?}, extra {extra:?}"
+        );
     }
 
     #[test]
@@ -1551,18 +1591,27 @@ mod tests {
         matches!(err, Error::Topo(msg) if msg.contains("empty topology"))
     }
 
-    /// Walk the hc tree and capture the first node's resource FMRI, or
-    /// return `Ok(None)` if the topology is empty.
-    fn first_hc_resource(snap: &Snapshot<'_>) -> Result<Option<Fmri>, Error> {
-        let mut captured: Option<Fmri> = None;
+    /// Walk the hc tree and apply `f` to the first node, or return
+    /// `Ok(None)` if the topology is empty.
+    fn first_hc_node<T>(
+        snap: &Snapshot<'_>,
+        mut f: impl FnMut(Node<'_>) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
+        let mut captured: Option<T> = None;
         match snap.walk(Scheme::Hc, |node| {
-            captured = Some(node.resource()?);
+            captured = Some(f(node)?);
             Ok(WalkAction::Stop)
         }) {
             Ok(()) => Ok(captured),
             Err(e) if is_empty_topology(&e) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The first hc node's resource FMRI, or `Ok(None)` if the topology is
+    /// empty.
+    fn first_hc_resource(snap: &Snapshot<'_>) -> Result<Option<Fmri>, Error> {
+        first_hc_node(snap, |node| node.resource())
     }
 
     #[test]
@@ -1585,6 +1634,24 @@ mod tests {
             }
             Err(e) => panic!("walk failed: {e}"),
         }
+    }
+
+    #[test]
+    fn walk_root_node_name_is_hc_constant() {
+        let hdl = TopoHdl::open().expect("failed to open");
+        let snap = hdl.snapshot().expect("failed to take snapshot");
+        let Some(name) =
+            first_hc_node(&snap, |node| Ok(node.name().into_owned())).expect("walk failed")
+        else {
+            eprintln!("skipping: empty hc topology");
+            return;
+        };
+        // Top-level hc ranges declared by the stock and Oxide platform maps.
+        const ROOTS: &[&str] = &[hc::CHASSIS, hc::MOTHERBOARD, hc::SES_ENCLOSURE];
+        assert!(
+            ROOTS.contains(&name.as_str()),
+            "unexpected hc root node name {name:?}"
+        );
     }
 
     #[test]
