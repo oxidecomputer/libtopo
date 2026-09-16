@@ -23,9 +23,6 @@ snap.walk(Scheme::Hc, |node| {
 })?;
 ```
 
-Inside the walker callback a `Node` also exposes `label()`, `parent()`,
-`property(group, name)`, and `property_groups()`.
-
 See [`examples/`](examples/) for runnable programs:
 
 - `list_topology` — dump a scheme's nodes, FMRIs, labels, and (with `-v`)
