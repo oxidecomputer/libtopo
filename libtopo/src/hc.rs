@@ -1,11 +1,12 @@
 //! String constants from `<fm/topo_hc.h>`: the hc-scheme node names and
 //! the property-group and property names libtopo's enumerators publish on
-//! hc nodes.
+//! hc nodes. Also the `topo_slot_type_t` values from `<fm/libtopo.h>`,
+//! which are what [`TOPO_PROP_SLOT_TYPE`] holds.
 //!
-//! Each constant is the `&str` form of the NUL-terminated byte array that
-//! `libtopo-sys` binds from the header, converted at compile time, so the
-//! values stay tied to the header rather than being retyped here. Names
-//! match the C macros exactly.
+//! Each string constant is the `&str` form of the NUL-terminated byte array
+//! that `libtopo-sys` binds from the header, converted at compile time, so
+//! the values stay tied to the header rather than being retyped here. Names
+//! match the C macros and enumerators exactly.
 //!
 //! Compare node names against [`Node::name`](crate::Node::name) and pass
 //! group and property names to [`Node::property`](crate::Node::property)
@@ -352,3 +353,12 @@ hc_str! {
     TOPO_PGROUP_CACHE_FLAGS_UNIFIED,
     TOPO_PGROUP_CACHE_FLAGS_FA,
 }
+
+/// [`TOPO_PROP_SLOT_TYPE`] value for a DIMM slot.
+pub const TOPO_SLOT_TYPE_DIMM: u32 = libtopo_sys::topo_slot_type_TOPO_SLOT_TYPE_DIMM;
+/// [`TOPO_PROP_SLOT_TYPE`] value for a UFM slot.
+pub const TOPO_SLOT_TYPE_UFM: u32 = libtopo_sys::topo_slot_type_TOPO_SLOT_TYPE_UFM;
+/// [`TOPO_PROP_SLOT_TYPE`] value for an M.2 slot.
+pub const TOPO_SLOT_TYPE_M2: u32 = libtopo_sys::topo_slot_type_TOPO_SLOT_TYPE_M2;
+/// [`TOPO_PROP_SLOT_TYPE`] value for a PCIe CEM slot.
+pub const TOPO_SLOT_TYPE_CEM: u32 = libtopo_sys::topo_slot_type_TOPO_SLOT_TYPE_CEM;
